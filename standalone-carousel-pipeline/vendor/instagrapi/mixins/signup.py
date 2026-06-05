@@ -1,0 +1,402 @@
+import random
+import secrets
+import time
+from typing import Optional
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+from instagrapi.exceptions import (
+    AgeEligibilityError,
+    CaptchaChallengeRequired,
+    ChallengeRequired,
+    ClientError,
+    EmailInvalidError,
+    EmailNotAvailableError,
+    EmailVerificationSendError,
+    FeedbackRequired,
+    SignupSpamError,
+)
+from instagrapi.extractors import extract_user_short
+from instagrapi.mixins.challenge import ChallengeChoice
+from instagrapi.types import UserShort
+
+CHOICE_EMAIL = 1
+
+
+class SignUpMixin:
+    waterfall_id = str(uuid4())
+    adid = str(uuid4())
+    wait_seconds = 5
+
+    @staticmethod
+    def _safe_challenge_api_path(api_path: str, field_name: str = "api_path") -> str:
+        if not isinstance(api_path, str) or not api_path:
+            raise ClientError(f"Malformed challenge data from Instagram (missing {field_name}).")
+        parts = urlsplit(api_path)
+        has_control_chars = any(ord(char) < 32 or ord(char) == 127 for char in api_path)
+        if (
+            parts.scheme
+            or parts.netloc
+            or not api_path.startswith("/")
+            or api_path.startswith("//")
+            or "\\" in api_path
+            or has_control_chars
+        ):
+            raise ClientError(f"Unsafe challenge path from Instagram: {field_name}")
+        return api_path
+
+    def _challenge_url(self, api_path: str, prefix: str = "", field_name: str = "api_path") -> str:
+        return f"https://i.instagram.com{prefix}{self._safe_challenge_api_path(api_path, field_name)}"
+
+    def signup(
+        self,
+        username: str,
+        password: str,
+        email: str = "",
+        phone_number: str = "",
+        full_name: str = "",
+        year: int = None,
+        month: int = None,
+        day: int = None,
+    ) -> UserShort:
+        if not (email or phone_number):
+            raise ClientError("Use email or phone_number for signup")
+
+        self.get_signup_config()
+        kwargs = {
+            "username": username,
+            "password": password,
+            "full_name": full_name,
+            "year": year,
+            "month": month,
+            "day": day,
+        }
+
+        if email:
+            check = self.check_email(email)
+            if not check.get("valid"):
+                raise EmailInvalidError(f"Email not valid: {check.get('error_title', check)}")
+            if not check.get("available"):
+                raise EmailNotAvailableError(f"Email not available: {check.get('feedback_message', check)}")
+            sent = self.send_verify_email(email)
+            if not sent.get("email_sent"):
+                raise EmailVerificationSendError(f"Failed to send verification email: {sent}")
+
+            # Date of Birth (DOB) Age Eligibility Check
+            if year and month and day:
+                age_check_result = self.check_age_eligibility(year, month, day)
+                if not age_check_result.get("eligible"):  # Assuming "eligible": True is success
+                    raise AgeEligibilityError(f"Account not eligible based on age criteria: {age_check_result}")
+
+            # send code confirmation
+            code = ""
+            for attempt in range(1, 11):
+                code = self.challenge_code_handler(username, CHOICE_EMAIL)
+                if code:
+                    break
+                time.sleep(self.wait_seconds * attempt)
+            print(f'Enter code "{code}" for {username} ({attempt} attempts, by {self.wait_seconds} seconds)')
+            signup_code = self.check_confirmation_code(email, code).get("signup_code")
+            kwargs["email"] = email
+            kwargs["signup_code"] = signup_code
+
+        if phone_number and not email:
+            kwargs["phone_number"] = phone_number
+            check = self.check_phone_number(phone_number)
+            if check.get("status") != "ok" and not check.get("valid"):
+                raise ClientError(f"Phone number not valid ({check})")
+            sms = self.send_signup_sms_code(phone_number)
+            if sms.get("status") != "ok":
+                raise ClientError(f"Error when verify phone number ({sms})")
+            attempt = 1
+            if "verification_code" in sms:
+                code = sms["verification_code"]
+            else:
+                code = ""
+                for attempt in range(1, 11):
+                    code = self.challenge_code_handler(username, ChallengeChoice.SMS)
+                    if code:
+                        break
+                    time.sleep(self.wait_seconds * attempt)
+            print(f'Enter code "{code}" for {username} ({attempt} attempts, by {self.wait_seconds} seconds)')
+            kwargs["phone_code"] = code
+
+        retries = 0
+        while retries < 3:
+            data = self.accounts_create(**kwargs)
+            if data.get("message") != "challenge_required":
+                break
+            if self.challenge_flow(data["challenge"], phone_number=phone_number, username=username):
+                kwargs.update({"suggestedUsername": "", "sn_result": "MLA"})
+            retries += 1
+        return extract_user_short(data["created_user"])
+
+    def get_signup_config(self) -> dict:
+        return self.private_request(
+            "consent/get_signup_config/",
+            params={"guid": self.uuid, "main_account_selected": False},
+        )
+
+    def check_email(self, email) -> dict:
+        """Check available (free, not registred) email"""
+        return self.private_request(
+            "users/check_email/",
+            {
+                "android_device_id": self.android_device_id,
+                "login_nonce_map": "{}",
+                "login_nonces": "[]",
+                "email": email,
+                "qe_id": str(uuid4()),
+                "waterfall_id": self.waterfall_id,
+            },
+        )
+
+    def check_username(self, username):
+        return self.private_request("users/check_username/", data={"username": username, "_uuid": self.uuid})
+
+    def check_phone_number(self, phone_number: str):
+        return self.private_request(
+            "accounts/check_phone_number/",
+            data={
+                "phone_id": self.phone_id,
+                "login_nonce_map": "{}",
+                "phone_number": phone_number.replace(" ", "+"),
+                "guid": self.uuid,
+                "device_id": self.android_device_id,
+                "prefill_shown": "False",
+            },
+        )
+
+    def send_signup_sms_code(self, phone_number: str):
+        return self.private_request(
+            "accounts/send_signup_sms_code/",
+            data={
+                "phone_id": self.phone_id,
+                "phone_number": phone_number.replace(" ", "+"),
+                "guid": self.uuid,
+                "device_id": self.android_device_id,
+                "android_build_type": "release",
+                "waterfall_id": self.waterfall_id,
+            },
+        )
+
+    def send_verify_email(self, email) -> dict:
+        """Send request to receive code to email"""
+        return self.private_request(
+            "accounts/send_verify_email/",
+            {
+                "phone_id": self.phone_id,
+                "device_id": self.android_device_id,
+                "email": email,
+                "waterfall_id": self.waterfall_id,
+                "auto_confirm_only": "false",
+            },
+        )
+
+    def check_confirmation_code(self, email, code) -> dict:
+        """Enter code from email"""
+        return self.private_request(
+            "accounts/check_confirmation_code/",
+            {
+                "code": code,
+                "device_id": self.android_device_id,
+                "email": email,
+                "waterfall_id": self.waterfall_id,
+            },
+        )
+
+    def check_age_eligibility(self, year, month, day):
+        return self.private_request(
+            "consent/check_age_eligibility/",
+            data={"_csrftoken": self.token, "day": day, "year": year, "month": month},
+            with_signature=False,
+        ).json()
+
+    def accounts_create(
+        self,
+        username: str,
+        password: str,
+        email: str = "",
+        signup_code: str = "",
+        phone_number: str = "",
+        phone_code: str = "",
+        full_name: str = "",
+        year: int = None,
+        month: int = None,
+        day: int = None,
+        **kwargs,
+    ) -> dict:
+        if not (email or phone_number):
+            raise ClientError("Use email or phone_number for signup")
+
+        # timestamp = datetime.now().strftime("%s")  # Unused variable
+        data = {
+            "jazoest": str(int(random.randint(22300, 22399))),  # "22341",
+            "tos_version": "row",
+            "suggestedUsername": "",
+            "sn_result": "",
+            "do_not_auto_login_if_credentials_match": "false",
+            "phone_id": self.phone_id,
+            "enc_password": self.password_encrypt(password),
+            "username": str(username),
+            "first_name": str(full_name),
+            "adid": self.adid,
+            "guid": self.uuid,
+            "day": day,
+            "month": month,
+            "year": year,
+            "device_id": self.android_device_id,
+            "_uuid": self.uuid,
+            "waterfall_id": self.waterfall_id,
+            "one_tap_opt_in": "true",
+            **kwargs,
+        }
+        if email and not phone_number:
+            endpoint = "accounts/create/"
+            domain = "www.instagram.com"
+            data.update(
+                {
+                    "email": email,
+                    "force_sign_up_code": signup_code,
+                    "qs_stamp": "",
+                    "sn_nonce": bytes(f"{email}|{str(int(time.time()))}|{secrets.token_bytes(24)}", "utf-8"),
+                }
+            )
+        else:
+            endpoint = "accounts/create_validated/"
+            domain = None
+            data.update(
+                {
+                    "phone_number": phone_number,
+                    "verification_code": phone_code,
+                    "force_sign_up_code": "",
+                    "has_sms_consent": "true",
+                }
+            )
+            if data.get("logged_in_user_id"):
+                data["is_secondary_account_creation"] = "true"
+        try:
+            return self.private_request(endpoint, data, domain=domain)
+        except FeedbackRequired as exc:
+            if getattr(exc, "spam", False):
+                details = vars(exc).copy()
+                details.pop("message", None)
+                raise SignupSpamError(
+                    "Instagram rejected the legacy signup flow as spam. "
+                    "Modern app signup uses additional device trust checks that instagrapi does not currently generate.",
+                    **details,
+                ) from exc
+            raise
+
+    def challenge_flow(
+        self,
+        data,
+        phone_number: str = "",
+        username: str = "",
+        wait_seconds: Optional[int] = None,
+        attempts: int = 10,
+    ) -> bool:
+        data = self.challenge_api(data)
+        wait_seconds = self.wait_seconds if wait_seconds is None else wait_seconds
+        username = username or getattr(self, "username", "")
+
+        for _ in range(10):
+            if data.get("status") == "ok":
+                return True
+            if data.get("message") == "challenge_required":
+                data = self.challenge_captcha(data["challenge"])
+                continue
+            if data.get("challengeType") == "SubmitPhoneNumberForm":
+                if not phone_number:
+                    raise ClientError("phone_number is required for signup SMS challenge")
+                data = self.challenge_submit_phone_number(data, phone_number)
+                continue
+            if data.get("challengeType") == "VerifySMSCodeFormForSMSCaptcha":
+                security_code = ""
+                for attempt in range(attempts):
+                    security_code = self.challenge_code_handler(username, ChallengeChoice.SMS)
+                    if security_code:
+                        break
+                    if wait_seconds:
+                        time.sleep(wait_seconds * (attempt + 1))
+                if not security_code:
+                    raise ChallengeRequired("SMS code required for signup challenge")
+                data = self.challenge_verify_sms_captcha(data, security_code)
+                continue
+            raise ClientError(f"Unsupported signup challenge step: {data}")
+        raise ClientError(f"Signup challenge flow did not complete: {data}")
+
+    def challenge_api(self, data):
+        resp = self.private.get(
+            self._challenge_url(data.get("api_path"), prefix="/api/v1"),
+            params={
+                "guid": self.uuid,
+                "device_id": self.android_device_id,
+                "challenge_context": data["challenge_context"],
+            },
+        )
+        return resp.json()
+
+    def challenge_captcha(self, challenge_json_data):
+        api_path = challenge_json_data.get("api_path")
+        site_key = challenge_json_data.get("fields", {}).get("sitekey")
+        challenge_type = challenge_json_data.get("challengeType")  # For logging/context
+
+        if not site_key or not api_path:
+            self.logger.error(
+                f"Malformed captcha challenge data from Instagram: site_key={site_key}, api_path={api_path}"
+            )
+            raise ClientError("Malformed captcha challenge data from Instagram (missing site_key or api_path).")
+
+        challenge_post_url = self._challenge_url(api_path)
+        captcha_details_for_solver = {
+            "site_key": site_key,
+            "challenge_type": challenge_type,
+            "raw_challenge_json": challenge_json_data,
+            "page_url": "https://www.instagram.com/accounts/emailsignup/",  # Common page for signup captcha
+        }
+
+        try:
+            # self.captcha_resolve is assumed to be implemented on the main Client class
+            # and is expected to raise CaptchaChallengeRequired if it cannot obtain a token.
+            g_recaptcha_response = self.captcha_resolve(**captcha_details_for_solver)
+        except CaptchaChallengeRequired:
+            self.logger.warning(
+                "Captcha solution was required by Instagram but not provided/resolved by any configured handler."
+            )
+            raise  # Re-raise for the user of instagrapi to handle or be informed.
+        except Exception as e:
+            self.logger.error(
+                f"An unexpected error occurred during the captcha resolution process: {e}",
+                exc_info=True,
+            )
+            raise ClientError(f"Captcha resolution process failed: {e}")  # Wrap other errors
+
+        # Proceed to POST the g_recaptcha_response:
+        resp = self.private.post(
+            challenge_post_url,
+            data={"g-recaptcha-response": g_recaptcha_response},
+        )
+        return resp.json()
+
+    def challenge_submit_phone_number(self, data, phone_number):
+        api_path = data.get("navigation", {}).get("forward")
+        resp = self.private.post(
+            self._challenge_url(api_path, field_name="navigation.forward"),
+            data={
+                "phone_number": phone_number,
+                "challenge_context": data["challenge_context"],
+            },
+        )
+        return resp.json()
+
+    def challenge_verify_sms_captcha(self, data, security_code):
+        api_path = data.get("navigation", {}).get("forward")
+        resp = self.private.post(
+            self._challenge_url(api_path, field_name="navigation.forward"),
+            data={
+                "security_code": security_code,
+                "challenge_context": data["challenge_context"],
+            },
+        )
+        return resp.json()

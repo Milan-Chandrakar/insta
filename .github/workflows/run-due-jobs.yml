@@ -1,0 +1,44 @@
+name: Run due jobs
+
+on:
+  schedule:
+    - cron: '30-55/5 17 * * *'
+    - cron: '0-30/5 18 * * *'
+    - cron: '30-55/5 20 * * *'
+    - cron: '0-30/5 21 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-due-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run due jobs
+        env:
+          QUEUE_STORE_PROVIDER: supabase
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_JOBS_TABLE: automation_jobs
+          SUPABASE_INTAKES_TABLE: automation_intakes
+          GRAPH_IG_USER_ID: ${{ secrets.GRAPH_IG_USER_ID }}
+          GRAPH_ACCESS_TOKEN: ${{ secrets.GRAPH_ACCESS_TOKEN }}
+          GRAPH_API_VERSION: v25.0
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          CLOUDINARY_UPLOAD_PRESET: ${{ secrets.CLOUDINARY_UPLOAD_PRESET }}
+          CLOUDINARY_UPLOAD_FOLDER: sanatan-dharma-ai/reels
+          ZERNIO_API_KEY: ${{ secrets.ZERNIO_API_KEY }}
+          ZERNIO_ACCOUNT_ID: ${{ secrets.ZERNIO_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/run-due-jobs.js

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Automation V2</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Sanatan automation</p>
+          <h1>Publishing Control</h1>
+        </div>
+        <div class="status-strip" id="systemStatus">Loading...</div>
+      </header>
+
+      <section class="mode-strip">
+        <div>
+          <p class="eyebrow">Timing mode</p>
+          <h2>Execution Window</h2>
+        </div>
+        <div class="mode-controls">
+          <select id="schedulerMode">
+            <option value="local_worker">Local worker always on</option>
+            <option value="github_actions_window">GitHub Actions windows only</option>
+          </select>
+          <button class="ghost" id="schedulerModeSave" type="button">Save Mode</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Intake</p>
+              <h2>WhatsApp Queue</h2>
+            </div>
+            <div style="display: flex; gap: 0.5rem;">
+              <button class="ghost danger" id="factoryResetButton" type="button" style="color: #ff4b4b; border-color: #ff4b4b;">Factory Reset</button>
+              <button class="ghost" id="refreshButton" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="list scroll-three" id="intakeList"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Share Map</p>
+              <h2>Where + When</h2>
+            </div>
+          </div>
+          <div class="list scroll-three" id="destinationList"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Logs</p>
+              <h2>Live API Logs</h2>
+            </div>
+          </div>
+          <div class="list scroll-three" id="logList"></div>
+        </article>
+      </section>
+
+      <div class="toast" id="toast" hidden></div>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

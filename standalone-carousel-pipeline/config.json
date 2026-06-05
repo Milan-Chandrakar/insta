@@ -1,0 +1,16 @@
+{
+  "mode": "official_graph",
+  "music_track": null,
+  "location_id": null,
+  "instagram_location_pk": null,
+  "user_tags": [],
+  "schedule_utc": null,
+  "caption_file_name": "caption_and_story.txt",
+  "credentials": {
+    "graph_ig_user_id": "17841478189856229",
+    "graph_access_token": "EAApDm8RqZBYsBRnXlYcgIPGvLxi5N1FjZA6KqZBRn2lVeS5AT0asI7PZCj5JyLNQU9Uot15uJf4iuXTPbGIWbFGakqIehOpLqy1IYjQZC1ZBNjDzHeQZCg0uCwG8EQVZAkoiWWUoubQUSxTAao5RS9bGxHi7UZAlp3qySprFWZA0xHZB1BFF2kq16ylEJWWqz5C0qRDmcsNOx2owsTX1ZBVLYKHAtxsd0I1TLu43ZA0h1HNM214EEzrCqkF9r",
+    "cloudinary_cloud_name": "dkd6sclme",
+    "cloudinary_upload_preset": "insta_reels",
+    "cloudinary_folder": "sanatan-dharma-ai/carousel"
+  }
+}

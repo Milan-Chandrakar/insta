@@ -1,0 +1,16 @@
+{
+  "location": "Kedarnath",
+  "requireMusicAutomation": true,
+  "maxInstagramCarouselItems": 10,
+  "acceptedImageExtensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp"
+  ],
+  "notes": [
+    "All images must already be exact 9:16.",
+    "All images should be the same dimensions.",
+    "If native Instagram carousel music automation is mandatory, block the post."
+  ]
+}

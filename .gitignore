@@ -1,0 +1,7 @@
+node_modules/
+.env
+.npm-cache/
+data/
+.wwebjs_cache/
+.playwright-mcp/
+tmp_caption_ref/
