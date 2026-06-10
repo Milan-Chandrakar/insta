@@ -570,6 +570,23 @@ els.factoryReset?.addEventListener('click', async () => {
 
 const uploadMediaButton = document.getElementById('uploadMediaButton');
 const directUploadInput = document.getElementById('directUploadInput');
+const restartWhatsappButton = document.getElementById('restartWhatsappButton');
+
+if (restartWhatsappButton) {
+  restartWhatsappButton.addEventListener('click', async () => {
+    restartWhatsappButton.disabled = true;
+    showToast('Restarting WhatsApp...');
+    try {
+      const result = await requestJson('/api/whatsapp/restart', { method: 'POST' });
+      showToast(result.message || 'WhatsApp restarted');
+      await refresh();
+    } catch (error) {
+      showToast(`Restart failed: ${error.message}`);
+    } finally {
+      restartWhatsappButton.disabled = false;
+    }
+  });
+}
 
 if (uploadMediaButton && directUploadInput) {
   uploadMediaButton.addEventListener('click', () => {

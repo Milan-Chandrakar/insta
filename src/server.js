@@ -424,6 +424,16 @@ app.get('/api/intakes/:intakeId', ...readGuards, (req, res) => {
     intake
   });
 });
+app.post('/api/whatsapp/restart', ...writeGuards, async (req, res) => {
+  try {
+    const { restartWhatsAppClient } = await import('./services/whatsapp.js');
+    restartWhatsAppClient();
+    res.json({ ok: true, message: 'Restarting WhatsApp...' });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.post('/api/intakes/upload', ...writeGuards, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
