@@ -37,8 +37,8 @@ import {
   saveWhatsAppZipCarouselIntake
 } from './services/intake-store.js';
 import {
+  cancelJob,
   enqueueJob,
-  archiveQueuedJobsBefore,
   findQueuedJobByIntake,
   getJob,
   getJobWorkerStatus,
@@ -51,7 +51,7 @@ import {
 } from './services/jobs.js';
 import { registerDefaultJobProcessors } from './services/job-processors.js';
 import { getMusicLibraryStatus } from './services/music-library.js';
-import { getSchedulerState, loadSchedulerState, setSchedulerExecutionMode } from './services/scheduler-state.js';
+import { getSchedulerState, loadSchedulerState } from './services/scheduler-state.js';
 import { getShortLink, loadShortLinks } from './services/short-links.js';
 import { rateLimitRead, rateLimitWrite } from './services/rate-limit.js';
 import { getReelHostingStatus } from './services/reel-hosting.js';
@@ -389,6 +389,22 @@ app.get('/api/jobs/:jobId', ...readGuards, (req, res) => {
   res.json(jobResponse(job));
 });
 
+app.delete('/api/jobs/:jobId', ...writeGuards, async (req, res) => {
+  try {
+    const job = getJob(req.params.jobId);
+    if (!job) {
+      res.status(404).json({ error: 'Job not found.' });
+      return;
+    }
+
+    const cancelled = await cancelJob(req.params.jobId);
+    res.json({ ok: true, job: summarizeJob(cancelled) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+
 app.get('/api/intakes', ...readGuards, (_req, res) => {
   res.json({
     ok: true,
@@ -445,7 +461,18 @@ app.post('/api/intakes/:intakeId/requeue', ...writeGuards, async (req, res) => {
     });
 
     let job = null;
-    if (queuedProcessJob) {
+    const finalizeJob = findQueuedJobByIntake({
+      intakeId: intake.id,
+      kinds: ['finalize-intake']
+    });
+
+    if (finalizeJob) {
+      await markIntakeProcessed(intake.id, { scheduledFor: dueAt });
+      job = await updateQueuedJob(finalizeJob.id, {
+        runAt: input.scheduleMode === 'now' ? null : finalizeJob.runAt,
+        createdBy: getCurrentUser(req) || finalizeJob.createdBy || 'dashboard'
+      });
+    } else if (queuedProcessJob) {
       job = await updateQueuedJob(queuedProcessJob.id, {
         runAt: dueAt,
         createdBy: getCurrentUser(req) || queuedProcessJob.createdBy || 'dashboard',
@@ -623,10 +650,25 @@ app.post('/api/carousel/:intakeId/schedule', ...writeGuards, async (req, res) =>
     });
 
     let job = null;
-    if (queuedPublishJob) {
+    const finalizeJob = findQueuedJobByIntake({
+      intakeId: intake.id,
+      kinds: ['finalize-intake']
+    });
+
+    if (finalizeJob) {
+      await markIntakeProcessed(intake.id, { scheduledFor: dueAt });
+      job = await updateQueuedJob(finalizeJob.id, {
+        runAt: input.scheduleMode === 'now' ? null : finalizeJob.runAt,
+        createdBy: getCurrentUser(req) || finalizeJob.createdBy || 'dashboard'
+      });
+    } else if (queuedPublishJob) {
       job = await updateQueuedJob(queuedPublishJob.id, {
         runAt: dueAt,
-        createdBy: getCurrentUser(req) || queuedPublishJob.createdBy || 'dashboard'
+        createdBy: getCurrentUser(req) || queuedPublishJob.createdBy || 'dashboard',
+        payload: {
+          publishNow: input.scheduleMode === 'now',
+          dueAt
+        }
       });
     } else if (queuedProcessJob) {
       job = await updateQueuedJob(queuedProcessJob.id, {
@@ -811,33 +853,15 @@ app.get('/api/scheduler/mode', ...readGuards, (_req, res) => {
   });
 });
 
-app.post('/api/scheduler/mode', ...writeGuards, async (req, res) => {
-  try {
-    const executionMode = String(req.body?.executionMode || '').trim();
-    if (!['local_worker', 'github_actions_window'].includes(executionMode)) {
-      res.status(400).json({ error: 'executionMode must be local_worker or github_actions_window.' });
-      return;
-    }
-
-    const scheduler = await setSchedulerExecutionMode(executionMode);
-    if (executionMode === 'github_actions_window') {
-      await archiveQueuedJobsBefore(
-        scheduler.queueCutoffAt,
-        'Skipped legacy queued jobs after switching to GitHub Actions windows only mode.'
-      );
-      stopJobWorker({ pause: false });
-    } else {
-      startJobWorker();
-    }
-
-    res.json({
-      ok: true,
-      scheduler,
-      process: getJobWorkerStatus()
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
+app.post('/api/scheduler/mode', ...writeGuards, async (_req, res) => {
+  // Mode is now automatic: videos → local worker, carousels → GitHub Actions.
+  // This endpoint is kept for backward compatibility but is a no-op.
+  res.json({
+    ok: true,
+    scheduler: getSchedulerState(),
+    process: getJobWorkerStatus(),
+    message: 'Scheduler mode is now automatic and cannot be changed manually.'
+  });
 });
 
 registerDefaultJobProcessors((kind, processor) => registerJobProcessor(kind, processor));

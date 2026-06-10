@@ -16,20 +16,6 @@
         <div class="status-strip" id="systemStatus">Loading...</div>
       </header>
 
-      <section class="mode-strip">
-        <div>
-          <p class="eyebrow">Timing mode</p>
-          <h2>Execution Window</h2>
-        </div>
-        <div class="mode-controls">
-          <select id="schedulerMode">
-            <option value="local_worker">Local worker always on</option>
-            <option value="github_actions_window">GitHub Actions windows only</option>
-          </select>
-          <button class="ghost" id="schedulerModeSave" type="button">Save Mode</button>
-        </div>
-      </section>
-
       <section class="grid">
         <article class="panel">
           <div class="panel-head">
@@ -38,31 +24,31 @@
               <h2>WhatsApp Queue</h2>
             </div>
             <div style="display: flex; gap: 0.5rem;">
-              <button class="ghost danger" id="factoryResetButton" type="button" style="color: #ff4b4b; border-color: #ff4b4b;">Factory Reset</button>
+              <button class="ghost danger" id="factoryResetButton" type="button">Factory Reset</button>
               <button class="ghost" id="refreshButton" type="button">Refresh</button>
             </div>
           </div>
           <div class="list scroll-three" id="intakeList"></div>
         </article>
 
-        <article class="panel wide">
+        <article class="panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Share Map</p>
-              <h2>Where + When</h2>
+              <p class="eyebrow">Queue</p>
+              <h2>Upcoming Posts</h2>
             </div>
           </div>
           <div class="list scroll-three" id="destinationList"></div>
         </article>
 
-        <article class="panel wide">
+        <article class="panel wide-full">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Logs</p>
-              <h2>Live API Logs</h2>
+              <p class="eyebrow">Pipeline</p>
+              <h2>Live Status</h2>
             </div>
           </div>
-          <div class="list scroll-three" id="logList"></div>
+          <div class="log-timeline" id="logList"></div>
         </article>
       </section>
 

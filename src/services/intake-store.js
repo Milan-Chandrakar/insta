@@ -142,15 +142,20 @@ async function inspectImageBuffer(imageBuffer) {
   };
 }
 
-function assertNineBySixteen(image, index, baseline = null) {
+function assertValidCarouselAspect(image, index, baseline = null) {
   const ratio = image.width / image.height;
-  if (Math.abs(ratio - (9 / 16)) > 0.0025) {
-    throw new Error(`Carousel image ${index + 1} must already be 9:16. Received ${image.width}x${image.height}.`);
+  
+  const is9x16 = Math.abs(ratio - (9 / 16)) <= 0.01;
+  const is4x5 = Math.abs(ratio - (4 / 5)) <= 0.01;
+  const is1x1 = Math.abs(ratio - 1) <= 0.01;
+
+  if (!is9x16 && !is4x5 && !is1x1) {
+    throw new Error(`Carousel image ${index + 1} has an unsupported aspect ratio (${image.width}x${image.height}). Expected 9:16, 4:5, or 1:1.`);
   }
 
   if (baseline && (baseline.width !== image.width || baseline.height !== image.height)) {
     throw new Error(
-      `Carousel image ${index + 1} does not match the first image size ${baseline.width}x${baseline.height}.`
+      `Carousel image ${index + 1} does not match the first image size ${baseline.width}x${baseline.height}. All images in a carousel must be exactly the same dimensions.`
     );
   }
 }
@@ -197,7 +202,7 @@ async function extractZipCarouselPackage({ zipBuffer, captionFileName = 'caption
       imageBuffer: rawBuffer
     });
     const dimensions = await inspectImageBuffer(normalized.imageBuffer);
-    assertNineBySixteen(dimensions, index, baseline);
+    assertValidCarouselAspect(dimensions, index, baseline);
     baseline = baseline || dimensions;
     files.push({
       filename: path.basename(entry.entryName),

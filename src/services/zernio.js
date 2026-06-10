@@ -169,3 +169,68 @@ export async function publishPinterestImageViaZernio({
     raw: data
   };
 }
+
+export async function publishPinterestVideoViaZernio({
+  videoUrl,
+  caption,
+  accountId,
+  boardId = null,
+  title = null,
+  link = null
+}) {
+  if (!hasRealZernioConfig()) {
+    throw new Error('Missing Zernio configuration. Set ZERNIO_API_KEY and ZERNIO_ACCOUNT_ID.');
+  }
+
+  if (!videoUrl) {
+    throw new Error('A public video URL is required before publishing through Zernio.');
+  }
+
+  const apiKey = config.zernio.apiKey;
+  const resolvedAccountId = accountId || config.zernio.accountId;
+  if (!resolvedAccountId) {
+    throw new Error('Missing Zernio account ID. Set ZERNIO_ACCOUNT_ID.');
+  }
+
+  const resolvedBoardId = boardId || await resolvePinterestBoardId(apiKey, resolvedAccountId);
+  if (!resolvedBoardId) {
+    throw new Error('No Pinterest board was found for the selected Zernio account.');
+  }
+
+  const resolvedTitle = normalizePinterestTitle(title, caption);
+  const payload = {
+    content: caption || resolvedTitle,
+    mediaItems: [
+      {
+        type: 'video',
+        url: videoUrl
+      }
+    ],
+    platforms: [
+      {
+        platform: 'pinterest',
+        accountId: resolvedAccountId,
+        platformSpecificData: {
+          title: resolvedTitle,
+          boardId: resolvedBoardId,
+          ...(link ? { link } : {})
+        }
+      }
+    ],
+    publishNow: true
+  };
+
+  const data = await zernioRequest({
+    apiKey,
+    method: 'POST',
+    path: '/posts',
+    body: payload,
+    operation: 'posts_create_video'
+  });
+
+  return {
+    provider: 'zernio',
+    post: data?.post || data?.data?.post || data?.data || null,
+    raw: data
+  };
+}

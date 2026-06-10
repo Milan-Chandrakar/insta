@@ -3,6 +3,7 @@ import { loadJobs, listJobs, registerJobProcessor, runDueJobsOnce } from '../src
 import { registerDefaultJobProcessors } from '../src/services/job-processors.js';
 import { loadShortLinks } from '../src/services/short-links.js';
 import { isWithinPublishingWindow, getPublishingWindowStatus } from '../src/services/publishing-windows.js';
+import { loadSchedulerState } from '../src/services/scheduler-state.js';
 
 const args = new Set(process.argv.slice(2));
 const force = args.has('--force');
@@ -15,6 +16,7 @@ function hasPublishNowJobs() {
 }
 
 async function main() {
+  await loadSchedulerState();
   await loadJobs();
   await loadIntakes();
   await loadShortLinks();

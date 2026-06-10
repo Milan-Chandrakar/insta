@@ -504,6 +504,37 @@ export function listJobs(limit = 20) {
     .slice(0, limit);
 }
 
+export async function cancelJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    throw new Error('Job not found.');
+  }
+
+  if (job.status !== 'queued') {
+    throw new Error(`Only queued jobs can be cancelled. This job is currently "${job.status}".`);
+  }
+
+  const updated = {
+    ...job,
+    status: 'cancelled',
+    completedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    error: 'Cancelled by operator.'
+  };
+
+  jobs.set(updated.id, updated);
+  await persistJob(updated);
+  addAuditLog({
+    category: 'job',
+    action: 'cancelled',
+    jobId: updated.id,
+    kind: updated.kind,
+    requestId: updated.requestId || null
+  });
+  return updated;
+}
+
+
 export async function archiveQueuedJobsBefore(cutoffAt, reason = 'Skipped because the publishing mode was changed before this job was due.') {
   if (!cutoffAt) {
     return [];

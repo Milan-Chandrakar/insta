@@ -54,30 +54,7 @@ input {
   margin-bottom: 24px;
 }
 
-.mode-strip {
-  align-items: center;
-  background: var(--panel-bg);
-  border: 1px solid var(--panel-border);
-  border-radius: 20px;
-  display: flex;
-  gap: 14px;
-  justify-content: space-between;
-  margin-bottom: 24px;
-  padding: 16px 20px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-}
 
-.mode-controls {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-}
-
-.mode-controls select {
-  min-width: 240px;
-}
 
 h1,
 h2,
@@ -136,7 +113,12 @@ h2 {
 .grid {
   display: grid;
   gap: 24px;
-  grid-template-columns: 1.15fr 0.85fr;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+}
+
+.wide-full {
+  grid-column: 1 / -1;
 }
 
 .panel {
@@ -158,6 +140,76 @@ h2 {
 
 .wide {
   min-height: 250px;
+}
+
+/* ── Pipeline timeline ─────────────────────────────────────────── */
+
+.log-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.log-entry {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  animation: fade-in 0.3s ease-out forwards;
+  opacity: 0;
+}
+
+.log-entry:last-child {
+  border-bottom: none;
+}
+
+.log-step {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-align: center;
+  white-space: nowrap;
+  font-family: 'Outfit', sans-serif;
+}
+
+.step-received  { background: rgba(0,229,255,0.12);  color: #00e5ff; }
+.step-running   { background: rgba(255,200,60,0.12);  color: #ffc83c; }
+.step-done      { background: rgba(74,222,128,0.12);  color: #4ade80; }
+.step-error     { background: rgba(248,113,113,0.12); color: #f87171; }
+
+.log-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.log-summary {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-detail {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-time {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-align: right;
 }
 
 .panel-head {
@@ -401,12 +453,6 @@ button:disabled {
     flex-direction: column;
   }
 
-  .mode-strip,
-  .mode-controls {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .status-strip {
     max-width: none;
     width: 100%;
@@ -418,5 +464,15 @@ button:disabled {
 
   .controls {
     grid-template-columns: 1fr;
+  }
+
+  .log-entry {
+    grid-template-columns: 120px 1fr;
+    grid-template-rows: auto auto;
+  }
+
+  .log-time {
+    grid-column: 2;
+    text-align: left;
   }
 }

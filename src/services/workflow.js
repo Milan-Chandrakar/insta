@@ -1,15 +1,19 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { config, isPublicHttpUrl } from '../config.js';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execAsync = promisify(exec);
+import { config, hasRealZernioConfig, isPublicHttpUrl } from '../config.js';
 import { fetchWithPolicy } from './http-client.js';
 import { addAuditLog, addWorkflowLog, getApiLogs } from './api-logs.js';
 import {
   publishInstagramImageViaBuffer,
   publishInstagramReelViaBuffer,
-  publishPinterestImageViaBuffer,
   publishYoutubeVideoViaBuffer,
   listBufferScheduledPostsForChannel
 } from './buffer.js';
+import { publishPinterestVideoViaZernio } from './zernio.js';
 import { buildCaptionPlan } from './caption-engine.js';
 import { ensureIntakeImageRenderable, getIntake, markIntakeProcessed } from './intake-store.js';
 import { buildDistributionPlan, buildPinterestCaption } from './distribution-plan.js';
@@ -214,104 +218,48 @@ async function scheduleCarouselGraphPublish(intake, input, meta) {
     }
   });
 
-  // Pinterest pins should never be scheduled/queued. Publish them immediately once the zip is ingested,
-  // but keep Instagram carousel publishing on the normal schedule.
   const hostedImages = await ensureHostedCarouselImages(intake, meta);
-  const existingPinterestTargets = Array.isArray(intake.publishedTargets)
-    ? intake.publishedTargets.filter((target) => target?.platform === 'pinterest')
-    : [];
-  const shouldPublishPinterestNow = existingPinterestTargets.length === 0 && !intake.pinterestImmediatePublishedAt;
-  if (shouldPublishPinterestNow) {
-    const pinterestTargets = [];
-    const pinterestWarnings = [];
+  logWorkflow(meta, 'pinterest_publish', 'Pinterest image posting is halted. Skipping Pinterest pins for carousel zip.', {
+    details: { imageCount: hostedImages.length }
+  });
 
-    if (hostedImages.length >= 1) {
-      try {
-        logWorkflow(meta, 'pinterest_publish', 'Publishing Pinterest pins immediately for the carousel zip (shareNow).', {
-          details: { imageCount: hostedImages.length }
-        });
-
-        const pinterestLink = hostedImages[0]?.publicUrl
-          ? (await createShortLink(hostedImages[0].publicUrl).catch(() => null))?.shortUrl || hostedImages[0].publicUrl
-          : null;
-        const pinterestCaption = buildPinterestCaption({
-          captionPlan: {
-            caption: intake.captionOverride || intake.body || ''
-          },
-          wallpaperLink: pinterestLink,
-          locationLabel: 'Kedarnath'
-        });
-        const pinterestTitleBase = String(intake.filename || intake.body || 'Sanatan Dharma carousel')
-          .replace(/\.[a-z0-9]+$/i, '')
-          .replace(/[_-]+/g, ' ')
-          .trim()
-          .slice(0, 90) || 'Sanatan Dharma carousel';
-
-        for (let index = 0; index < hostedImages.length; index += 1) {
-          try {
-            const publishedPinterestImage = await publishPinterestImageViaBuffer({
-              imageUrl: hostedImages[index].publicUrl,
-              caption: pinterestCaption,
-              shareNow: true,
-              dueAt: null,
-              title: `${pinterestTitleBase} ${index + 1}/${hostedImages.length}`,
-              link: pinterestLink
-            });
-            pinterestTargets.push({ platform: 'pinterest', variant: 'image', published: publishedPinterestImage });
-          } catch (error) {
-            pinterestWarnings.push(
-              `Pinterest image ${index + 1} skipped: ${error instanceof Error ? error.message : String(error)}`
-            );
-          }
-        }
-
-        await markIntakeProcessed(intake.id, {
-          pinterestImmediatePublishedAt: new Date().toISOString(),
-          pinterestImmediatePostIds: pinterestTargets.map((target) => target?.published?.postId).filter(Boolean),
-          publishedTargets: [...(intake.publishedTargets || []), ...pinterestTargets],
-          publishWarnings: [...(intake.publishWarnings || []), ...pinterestWarnings],
-          hostedImages
-        });
-      } catch (error) {
-        await markIntakeProcessed(intake.id, {
-          publishWarnings: [
-            ...(intake.publishWarnings || []),
-            `Pinterest immediate publish skipped: ${error instanceof Error ? error.message : String(error)}`
-          ]
-        });
-      }
-    }
-  }
-
-  const publishJob = await enqueueJob({
-    kind: 'publish-carousel-intake',
+  const holdUntil = input.publishNow ? null : new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  const finalizeJob = await enqueueJob({
+    kind: 'finalize-intake',
     payload: {
-      intakeId: intake.id
+      intakeId: intake.id,
+      channelId: null,
+      alreadyPublishedPinterest: false
     },
-    idempotencyKey: `publish-carousel:${intake.id}`,
-    requestId: meta.requestId ? `${meta.requestId}:publish` : `publish:${intake.id}`,
+    idempotencyKey: `finalize-intake:${intake.id}`,
+    requestId: meta.requestId,
     createdBy: meta.user || 'whatsapp',
-    runAt: scheduledSlot.dueAt || null
+    runAt: holdUntil
   });
 
   const updated = await markIntakeProcessed(intake.id, {
-    status: 'scheduled',
-    currentStage: 'scheduled',
-    currentStageLabel: scheduledSlot.dueAt ? 'Queued for carousel publish' : 'Queued for immediate carousel publish',
+    publishWarnings: [
+      ...(intake.publishWarnings || []),
+      'Pinterest image posting is halted. No Pinterest pins were created for this carousel.'
+    ],
+    hostedImages,
+    status: 'holding',
+    currentStage: 'holding',
+    currentStageLabel: 'Waiting for operator review (10m hold)',
     scheduledFor: scheduledSlot.dueAt || null,
     schedule: scheduledSlot,
     captionPlan: {
       caption: intake.captionOverride || intake.body || '',
       source: 'zip_caption'
     },
-    lastJobId: publishJob.id
+    lastJobId: finalizeJob.id
   });
 
   return {
     ok: true,
     intake: updated,
     schedule: scheduledSlot,
-    publishJob
+    publishJob: finalizeJob
   };
 }
 
@@ -388,38 +336,10 @@ export async function publishScheduledCarouselIntake(input, meta = {}) {
         published
       }
     ];
-    const publishWarnings = [];
-    const pinterestLink = hostedImages[0]?.publicUrl
-      ? (await createShortLink(hostedImages[0].publicUrl).catch(() => null))?.shortUrl || hostedImages[0].publicUrl
-      : null;
-    const pinterestCaption = buildPinterestCaption({
-      captionPlan: {
-        caption: intake.captionOverride || intake.body || ''
-      },
-      wallpaperLink: pinterestLink,
-      locationLabel: 'Kedarnath'
-    });
-    const pinterestTitleBase = String(intake.filename || intake.body || 'Sanatan Dharma carousel')
-      .replace(/\.[a-z0-9]+$/i, '')
-      .replace(/[_-]+/g, ' ')
-      .trim()
-      .slice(0, 90) || 'Sanatan Dharma carousel';
-
-    for (let index = 0; index < hostedImages.length; index += 1) {
-      try {
-        assertProcessingActive();
-        const publishedPinterestImage = await publishPinterestImageViaBuffer({
-          imageUrl: hostedImages[index].publicUrl,
-          caption: pinterestCaption,
-          shareNow: true,
-          title: `${pinterestTitleBase} ${index + 1}/${hostedImages.length}`,
-          link: pinterestLink
-        });
-        publishedTargets.push({ platform: 'pinterest', variant: 'image', published: publishedPinterestImage });
-      } catch (error) {
-        publishWarnings.push(`Pinterest image ${index + 1} skipped: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
+    // Pinterest image posting is halted.
+    const publishWarnings = [
+      'Pinterest image posting is halted. No Pinterest pins were created for this carousel.'
+    ];
 
     const updated = await markIntakeProcessed(intake.id, {
       status: 'published',
@@ -669,145 +589,31 @@ export async function runWhatsAppIntakeOperation(input, meta = {}) {
     const dueAt = scheduledSlot.dueAt;
     assertProcessingActive();
 
-    if (route.mediaKind === 'video') {
-      logWorkflow(meta, 'buffer_publish', 'Publishing the source MP4 as an Instagram reel and cross-posting the same video to YouTube Shorts and Pinterest.');
-      const publishedInstagram = await publishInstagramReelViaBuffer({
-        videoUrl: hostedVideo.publicUrl,
-        caption: distributionPlan.instagram.caption,
+    const holdUntil = input.publishNow ? null : new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const finalizeJob = await enqueueJob({
+      kind: 'finalize-intake',
+      payload: {
+        intakeId: intake.id,
         channelId: resolvedInstagramChannelId,
-        dueAt,
-        location: distributionPlan.instagram.location
-      });
-      publishedTargets.push({ platform: 'instagram', variant: 'reel', published: publishedInstagram });
-
-      try {
-        assertProcessingActive();
-        const publishedYoutube = await publishYoutubeVideoViaBuffer({
-          videoUrl: hostedVideo.publicUrl,
-          caption: distributionPlan.youtube.description,
-          dueAt,
-          title: distributionPlan.youtube.title
-        });
-        publishedTargets.push({ platform: 'youtube', variant: 'short', published: publishedYoutube });
-      } catch (error) {
-        publishWarnings.push(`YouTube publish skipped: ${error instanceof Error ? error.message : String(error)}`);
-      }
-
-      publishWarnings.push('Pinterest video publish skipped: Buffer GraphQL is rejecting Pinterest video pins in this integration path and requires an image asset.');
-    } else {
-      const igPublisher = route.instagramFormat === 'reel'
-        ? () => publishInstagramReelViaBuffer({
-            videoUrl: hostedVideo.publicUrl,
-            caption: distributionPlan.instagram.caption,
-            channelId: resolvedInstagramChannelId,
-            dueAt,
-            location: distributionPlan.instagram.location
-          })
-        : () => publishInstagramImageViaBuffer({
-            imageUrl: staticImage.publicUrl,
-            imageUrls: hostedImages.map((item) => item.publicUrl),
-            caption: distributionPlan.instagram.caption,
-            channelId: resolvedInstagramChannelId,
-            dueAt,
-            location: distributionPlan.instagram.location,
-            publishingType: route.instagramPublishingType,
-            musicReminder: 'Add music manually in Instagram before publishing.'
-          });
-
-      logWorkflow(meta, 'buffer_publish', route.needsVideoDerivative
-        ? `Publishing the Instagram ${route.instagramFormat} and the rendered video derivative to YouTube and Pinterest.`
-        : route.isCarousel
-          ? 'Publishing the Instagram carousel as a notification post and creating Pinterest image pins from the same images.'
-          : 'Publishing the Instagram image post as a notification post and creating a matching Pinterest image pin.');
-      assertProcessingActive();
-      const publishedInstagram = await igPublisher();
-      publishedTargets.push({ platform: 'instagram', variant: route.instagramFormat, published: publishedInstagram });
-      assertProcessingActive();
-
-      if (route.needsVideoDerivative && hostedVideo) {
-        try {
-          assertProcessingActive();
-          const publishedYoutube = await publishYoutubeVideoViaBuffer({
-            videoUrl: hostedVideo.publicUrl,
-            caption: distributionPlan.youtube.description,
-            dueAt,
-            title: distributionPlan.youtube.title
-          });
-          publishedTargets.push({ platform: 'youtube', variant: 'short', published: publishedYoutube });
-        } catch (error) {
-          publishWarnings.push(`YouTube publish skipped: ${error instanceof Error ? error.message : String(error)}`);
-        }
-
-        publishWarnings.push('Pinterest video publish skipped: Buffer GraphQL is rejecting Pinterest video pins in this integration path and requires an image asset.');
-      } else if (!route.isCarousel) {
-        publishWarnings.push('Pure image post: YouTube was skipped because this intake was not routed as a reel/video.');
-      }
-
-      if (route.isCarousel) {
-        for (let index = 0; index < hostedImages.length; index += 1) {
-          try {
-            assertProcessingActive();
-            if (alreadyPublishedPinterest) {
-              continue;
-            }
-            const publishedPinterestImage = await publishPinterestImageViaBuffer({
-              imageUrl: hostedImages[index].publicUrl,
-              caption: distributionPlan.pinterest.description,
-              shareNow: true,
-              dueAt: null,
-              title: `${distributionPlan.pinterest.title} ${index + 1}/${hostedImages.length}`,
-              link: distributionPlan.pinterest.wallpaperLink
-            });
-            publishedTargets.push({ platform: 'pinterest', variant: 'image', published: publishedPinterestImage });
-          } catch (error) {
-            publishWarnings.push(`Pinterest image ${index + 1} skipped: ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-      } else {
-        try {
-          assertProcessingActive();
-          if (alreadyPublishedPinterest) {
-            throw new Error('Pinterest dedupe: intake already has a Pinterest publish target.');
-          }
-          const publishedPinterestImage = await publishPinterestImageViaBuffer({
-            imageUrl: staticImage.publicUrl,
-            caption: distributionPlan.pinterest.description,
-            shareNow: true,
-            dueAt: null,
-            title: distributionPlan.pinterest.title,
-            link: distributionPlan.pinterest.wallpaperLink
-          });
-          publishedTargets.push({ platform: 'pinterest', variant: 'image', published: publishedPinterestImage });
-        } catch (error) {
-          publishWarnings.push(`Pinterest image publish skipped: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-
-    if (publishedTargets.length === 0) {
-      throw new Error('No publishing targets were successfully processed.');
-    }
-
-    const completedIntake = await markIntakeProcessed(intake.id, {
-      status: 'scheduled',
-      currentStage: 'completed',
-      currentStageLabel: 'Queued in Buffer',
-      scheduledFor: dueAt,
-      bufferPostId: publishedTargets[0]?.published?.postId || null,
-      reelUrl: hostedVideo?.publicUrl || null,
-      reelHostingProvider: hostedVideo?.provider || null,
-      publishedTargets,
-      publishWarnings,
-      published: publishedTargets[0]?.published || null
+        alreadyPublishedPinterest
+      },
+      idempotencyKey: `finalize-intake:${intake.id}`,
+      requestId: meta.requestId,
+      createdBy: meta.user || 'whatsapp',
+      runAt: holdUntil
     });
 
-    logWorkflow(meta, 'completed', 'WhatsApp intake was rendered and scheduled successfully.', {
+    const completedIntake = await markIntakeProcessed(intake.id, {
+      status: 'holding',
+      currentStage: 'holding',
+      currentStageLabel: 'Waiting for operator review (10m hold)',
+      scheduledFor: dueAt,
+      lastJobId: finalizeJob.id
+    });
+
+    logWorkflow(meta, 'holding', 'WhatsApp intake is processed and holding for 10 minutes before publishing.', {
       status: 'success',
-      details: {
-        postId: publishedTargets[0]?.published?.postId || null,
-        dueAt,
-        publishedTargets: publishedTargets.map((target) => target.platform)
-      }
+      details: { dueAt }
     });
 
     addAuditLog({
@@ -816,8 +622,7 @@ export async function runWhatsAppIntakeOperation(input, meta = {}) {
       requestId: meta.requestId || null,
       user: meta.user || 'whatsapp',
       outcome: 'success',
-      intakeId: intake.id,
-      postId: publishedTargets[0]?.published?.postId || null
+      intakeId: intake.id
     });
 
     return {
@@ -831,8 +636,6 @@ export async function runWhatsAppIntakeOperation(input, meta = {}) {
       hostedVideo,
       hostedImage: staticImage,
       schedule: scheduledSlot,
-      publishedTargets,
-      publishWarnings,
       apiLogs: getApiLogs()
     };
   } catch (error) {
@@ -845,4 +648,127 @@ export async function runWhatsAppIntakeOperation(input, meta = {}) {
     });
     throw error;
   }
+}
+
+export async function finalizeIntakeOperation(input, meta = {}) {
+  const intake = getIntake(input.intakeId);
+  if (!intake) throw new Error(`Intake ${input.intakeId} not found.`);
+  
+  const dueAt = intake.scheduledFor || intake.schedule?.dueAt;
+  const route = intake.routingPlan || intake.route;
+  
+  if (intake.publishStrategy === 'graph_carousel') {
+    const publishJob = await enqueueJob({
+      kind: 'publish-carousel-intake',
+      payload: { intakeId: intake.id },
+      idempotencyKey: `publish-carousel:${intake.id}`,
+      requestId: meta.requestId ? `${meta.requestId}:publish` : `publish:${intake.id}`,
+      createdBy: meta.user || 'whatsapp',
+      runAt: dueAt || null
+    });
+    
+    await markIntakeProcessed(intake.id, {
+      status: 'scheduled',
+      currentStage: 'scheduled',
+      currentStageLabel: dueAt ? 'Queued for carousel publish' : 'Queued for immediate carousel publish',
+      lastJobId: publishJob.id
+    });
+    return { ok: true, intake: getIntake(intake.id) };
+  }
+  
+  const distributionPlan = intake.distributionPlan;
+  const hostedVideo = intake.hostedVideo;
+  const staticImage = intake.hostedImage;
+  const hostedImages = intake.hostedImages || [];
+  const resolvedInstagramChannelId = input.channelId;
+  const alreadyPublishedPinterest = input.alreadyPublishedPinterest;
+  const publishedTargets = [];
+  const publishWarnings = [];
+  
+  if (route.mediaKind === 'video') {
+    const publishedInstagram = await publishInstagramReelViaBuffer({
+      videoUrl: hostedVideo.publicUrl,
+      caption: distributionPlan.instagram.caption,
+      channelId: resolvedInstagramChannelId,
+      dueAt,
+      location: distributionPlan.instagram.location
+    });
+    publishedTargets.push({ platform: 'instagram', variant: 'reel', published: publishedInstagram });
+
+    try {
+      const publishedYoutube = await publishYoutubeVideoViaBuffer({
+        videoUrl: hostedVideo.publicUrl,
+        caption: distributionPlan.youtube.description,
+        dueAt,
+        title: distributionPlan.youtube.title
+      });
+      publishedTargets.push({ platform: 'youtube', variant: 'short', published: publishedYoutube });
+    } catch (error) {
+      publishWarnings.push(`YouTube publish skipped: ${error.message}`);
+    }
+
+    if (!alreadyPublishedPinterest && hasRealZernioConfig()) {
+      try {
+        const publishedPinterestVideo = await publishPinterestVideoViaZernio({
+          videoUrl: hostedVideo.publicUrl,
+          caption: distributionPlan.pinterest.description,
+          accountId: config.zernio.accountId,
+          boardId: config.zernio.pinterestBoardId || null,
+          title: distributionPlan.pinterest.title,
+          link: distributionPlan.pinterest.wallpaperLink || null
+        });
+        publishedTargets.push({ platform: 'pinterest', variant: 'video', published: publishedPinterestVideo });
+      } catch (error) {
+        publishWarnings.push(`Pinterest video publish skipped: ${error.message}`);
+      }
+    }
+  } else {
+    const igPublisher = route.instagramFormat === 'reel'
+      ? () => publishInstagramReelViaBuffer({
+          videoUrl: hostedVideo.publicUrl,
+          caption: distributionPlan.instagram.caption,
+          channelId: resolvedInstagramChannelId,
+          dueAt,
+          location: distributionPlan.instagram.location
+        })
+      : () => publishInstagramImageViaBuffer({
+          imageUrl: staticImage.publicUrl,
+          imageUrls: hostedImages.map((item) => item.publicUrl),
+          caption: distributionPlan.instagram.caption,
+          channelId: resolvedInstagramChannelId,
+          dueAt,
+          location: distributionPlan.instagram.location,
+          publishingType: route.instagramPublishingType,
+          musicReminder: 'Add music manually in Instagram before publishing.'
+        });
+
+    const publishedInstagram = await igPublisher();
+    publishedTargets.push({ platform: 'instagram', variant: route.instagramFormat, published: publishedInstagram });
+
+    if (route.needsVideoDerivative && hostedVideo) {
+      try {
+        const publishedYoutube = await publishYoutubeVideoViaBuffer({
+          videoUrl: hostedVideo.publicUrl,
+          caption: distributionPlan.youtube.description,
+          dueAt,
+          title: distributionPlan.youtube.title
+        });
+        publishedTargets.push({ platform: 'youtube', variant: 'short', published: publishedYoutube });
+      } catch (error) {
+        publishWarnings.push(`YouTube publish skipped: ${error.message}`);
+      }
+    }
+  }
+
+  const completedIntake = await markIntakeProcessed(intake.id, {
+    status: 'scheduled',
+    currentStage: 'completed',
+    currentStageLabel: 'Queued in Buffer',
+    bufferPostId: publishedTargets[0]?.published?.postId || null,
+    publishedTargets,
+    publishWarnings,
+    published: publishedTargets[0]?.published || null
+  });
+
+  return { ok: true, intake: completedIntake };
 }
