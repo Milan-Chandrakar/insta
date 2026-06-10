@@ -424,7 +424,80 @@ app.get('/api/intakes/:intakeId', ...readGuards, (req, res) => {
     intake
   });
 });
+app.post('/api/intakes/upload', ...writeGuards, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No file uploaded.' });
+      return;
+    }
 
+    const { registerWhatsAppIntakeHandler } = await import('./services/whatsapp.js');
+    const { processWhatsAppIntakeOperation } = await import('./services/workflow.js');
+    let intakeHandler = null;
+    registerWhatsAppIntakeHandler((handler) => { intakeHandler = handler; });
+
+    const filename = String(req.file.originalname || 'upload').trim();
+    const mimeType = String(req.file.mimetype || 'application/octet-stream').trim().toLowerCase();
+    const buffer = req.file.buffer;
+    
+    // Check if zip
+    const isZip = mimeType.includes('zip') || filename.toLowerCase().endsWith('.zip');
+    const isVideo = mimeType.startsWith('video/');
+    const isImage = mimeType.startsWith('image/');
+    
+    if (!isZip && !isVideo && !isImage) {
+       res.status(400).json({ error: 'Unsupported file type. Please upload a ZIP, Image, or Video.' });
+       return;
+    }
+
+    const messageId = `upload-${crypto.randomUUID()}`;
+    let saved = null;
+
+    if (isZip) {
+      saved = await saveWhatsAppZipCarouselIntake({
+        messageId,
+        chatId: 'dashboard',
+        chatName: 'Dashboard Upload',
+        fromMe: true,
+        body: 'Uploaded via Dashboard',
+        filename,
+        mimeType,
+        zipBuffer: buffer
+      });
+    } else {
+      saved = await saveWhatsAppIntake({
+        messageId,
+        chatId: 'dashboard',
+        chatName: 'Dashboard Upload',
+        fromMe: true,
+        body: 'Uploaded via Dashboard',
+        filename,
+        mimeType,
+        imageBuffer: buffer
+      });
+    }
+
+    if (intakeHandler) {
+      await intakeHandler({
+        intakeId: saved.id,
+        channelId: config.buffer.defaultChannelId || undefined,
+        publishNow: false,
+        dueAt: null
+      });
+    } else {
+      await processWhatsAppIntakeOperation({
+        intakeId: saved.id,
+        channelId: config.buffer.defaultChannelId || undefined,
+        publishNow: false,
+        dueAt: null
+      });
+    }
+
+    res.json({ ok: true, intake: saved });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
 app.post('/api/intakes/:intakeId/requeue', ...writeGuards, async (req, res) => {
   try {
     const intake = getIntake(req.params.intakeId);

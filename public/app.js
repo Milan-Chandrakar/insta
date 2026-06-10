@@ -568,6 +568,48 @@ els.factoryReset?.addEventListener('click', async () => {
   }
 });
 
+const uploadMediaButton = document.getElementById('uploadMediaButton');
+const directUploadInput = document.getElementById('directUploadInput');
+
+if (uploadMediaButton && directUploadInput) {
+  uploadMediaButton.addEventListener('click', () => {
+    directUploadInput.click();
+  });
+
+  directUploadInput.addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    uploadMediaButton.disabled = true;
+    uploadMediaButton.textContent = 'Uploading...';
+    showToast('Uploading file to dashboard...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const response = await fetch('/api/intakes/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || 'Upload failed');
+      }
+
+      showToast('File successfully uploaded into queue!');
+      await refresh();
+    } catch (error) {
+      showToast(`Upload Error: ${error.message}`);
+    } finally {
+      uploadMediaButton.disabled = false;
+      uploadMediaButton.textContent = 'Upload Media';
+      directUploadInput.value = ''; // Reset input
+    }
+  });
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 refresh().catch((error) => {

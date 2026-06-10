@@ -23,7 +23,9 @@
               <p class="eyebrow">Intake</p>
               <h2>WhatsApp Queue</h2>
             </div>
-            <div style="display: flex; gap: 0.5rem;">
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="file" id="directUploadInput" accept=".zip,image/*,video/mp4" style="display: none;" />
+              <button class="ghost" id="uploadMediaButton" type="button">Upload Media</button>
               <button class="ghost danger" id="factoryResetButton" type="button">Factory Reset</button>
               <button class="ghost" id="refreshButton" type="button">Refresh</button>
             </div>
